@@ -1,5 +1,4 @@
 import praw
-from psaw import PushshiftAPI
 import datetime as dt
 import pandas as pd
 import time
@@ -16,104 +15,98 @@ reddit = praw.Reddit(
     client_secret='VqzFCDbJ2SsCNqHhxCZ54OqfNotLTw',
     user_agent='StockSentimentScraper (JHU NLP_SSM)', 
 )
-api = PushshiftAPI(reddit)
 
-start_epoch = int(dt.datetime(2024, 1, 1).timestamp())
-end_epoch = int(dt.datetime(2024, 12, 15).timestamp())
+# --- Time Range ---
+start_epoch = int(dt.datetime(2025, 4, 1).timestamp())
+end_epoch = int(dt.datetime(2025, 4, 15).timestamp())
+
 # --- Ticker + Full Name Map ---
 tickers_full = {
     'SPY': ['SPY', 'S&P 500'],
     'NVDA': ['NVDA', 'NVIDIA'],
     'TSLA': ['TSLA', 'TESLA']
 }
-min_comment_score = 0  # filter threshold for comments under posts
+all_aliases = [alias.upper() for aliases in tickers_full.values() for alias in aliases]
+min_comment_score = 0
 
-def exponential_backoff(attempt):
-    sleep_time = (2 ** attempt) + random.uniform(0, 1)
-    logging.warning(f'Backing off for {sleep_time:.2f} seconds...')
-    time.sleep(sleep_time)
-
-def fetch_posts_and_comments():
+def fetch_posts_and_comments_praw():
     data = []
-    for ticker, aliases in tickers_full.items():
-        query = ' OR '.join(aliases)
-        for attempt in range(5):
-            try:
-                gen = api.search_submissions(
-                    after=start_epoch,
-                    before=end_epoch,
-                    subreddit='wallstreetbets',
-                    q=query,
-                    filter=['id', 'title', 'selftext', 'score', 'created_utc'],
-                    limit=1000
-                )
-                break
-            except Exception as e:
-                logging.error(f"Pushshift error: {e}")
-                exponential_backoff(attempt)
-        else:
-            continue  # skip this ticker if all attempts fail
-
-        for submission in gen:
-            post_timestamp = dt.datetime.utcfromtimestamp(submission.created_utc).strftime('%Y-%m-%d %H:%M')
-            data.append({
-                'type': 'post',
-                'ticker': ticker,
-                'id': submission.id,
-                'text': submission.title + " " + getattr(submission, 'selftext', ''),
-                'score': submission.score,
-                'timestamp': post_timestamp
-            })
-
-            try:
-                praw_submission = reddit.submission(id=submission.id)
-                praw_submission.comments.replace_more(limit=0)
-                for comment in praw_submission.comments:
-                    comment_time = dt.datetime.utcfromtimestamp(comment.created_utc)
-                    if (start_epoch <= comment.created_utc <= end_epoch) and                        any(alias in comment.body.upper() for alias in aliases) and                        comment.score >= min_comment_score:
-                        data.append({
-                            'type': 'comment_under_post',
-                            'ticker': ','.join([a for a in aliases if a in comment.body.upper()]),
-                            'id': comment.id,
-                            'text': comment.body,
-                            'score': comment.score,
-                            'timestamp': comment_time.strftime('%Y-%m-%d %H:%M'),
-                            'parent_post_id': submission.id
-                        })
-            except Exception as e:
-                logging.warning(f"Error loading comments for post {submission.id}: {e}")
-            time.sleep(1)  # throttle to respect rate limits
-    return data
-
-def fetch_daily_discussion_comments():
-    data = []
-    for submission in reddit.subreddit('wallstreetbets').search('Daily Discussion', time_filter='year', sort='new'):
-        if not (start_epoch <= submission.created_utc <= end_epoch):
+    count_posts = 0
+    count_comments = 0
+    for submission in reddit.subreddit('wallstreetbets').new(limit=None):
+        if submission.created_utc < start_epoch:
+            break
+        if submission.created_utc > end_epoch:
             continue
-        submission.comments.replace_more(limit=0)
-        for comment in submission.comments.list():
-            for aliases in tickers_full.values():
-                if any(alias in comment.body.upper() for alias in aliases):
+        text = (submission.title + " " + submission.selftext).upper()
+        matched_aliases = [alias for alias in all_aliases if alias in text]
+        if not matched_aliases:
+            continue
+        count_posts += 1
+        post_timestamp = dt.datetime.utcfromtimestamp(submission.created_utc).strftime('%Y-%m-%d %H:%M')
+        data.append({
+            'type': 'post',
+            'ticker': ','.join(set(matched_aliases)),
+            'id': submission.id,
+            'text': submission.title + " " + submission.selftext,
+            'score': submission.score,
+            'timestamp': post_timestamp
+        })
+
+        try:
+            submission.comments.replace_more(limit=0)
+            for comment in submission.comments:
+                comment_text = comment.body.upper()
+                if any(alias in comment_text for alias in all_aliases) and comment.score >= min_comment_score:
+                    count_comments += 1
                     data.append({
-                        'type': 'comment_in_dd',
-                        'ticker': ','.join([a for a in aliases if a in comment.body.upper()]),
+                        'type': 'comment_under_post',
+                        'ticker': ','.join([a for a in all_aliases if a in comment_text]),
                         'id': comment.id,
                         'text': comment.body,
                         'score': comment.score,
                         'timestamp': dt.datetime.utcfromtimestamp(comment.created_utc).strftime('%Y-%m-%d %H:%M'),
                         'parent_post_id': submission.id
                     })
-                    break
-        time.sleep(1)  # throttle
+        except Exception as e:
+            logging.warning(f"Error loading comments for post {submission.id}: {e}")
+        time.sleep(1)
+    logging.info(f" Collected {count_posts} posts and {count_comments} post comments.")
+    print(f" Collected {count_posts} posts and {count_comments} post comments.")
+    return data
+
+def fetch_daily_discussion_comments():
+    data = []
+    count_dd_comments = 0
+    for submission in reddit.subreddit('wallstreetbets').search('Daily Discussion', time_filter='year', sort='new'):
+        if not (start_epoch <= submission.created_utc <= end_epoch):
+            continue
+        submission.comments.replace_more(limit=0)
+        for comment in submission.comments.list():
+            comment_text = comment.body.upper()
+            if any(alias in comment_text for alias in all_aliases):
+                count_dd_comments += 1
+                data.append({
+                    'type': 'comment_in_dd',
+                    'ticker': ','.join([a for a in all_aliases if a in comment_text]),
+                    'id': comment.id,
+                    'text': comment.body,
+                    'score': comment.score,
+                    'timestamp': dt.datetime.utcfromtimestamp(comment.created_utc).strftime('%Y-%m-%d %H:%M'),
+                    'parent_post_id': submission.id
+                })
+        time.sleep(1)
+    logging.info(f"✅ Collected {count_dd_comments} daily discussion comments.")
+    print(f"✅ Collected {count_dd_comments} daily discussion comments.")
     return data
 
 # --- Main ---
 if __name__ == '__main__':
-    logging.info("Starting Reddit scraping...")
-    posts_and_comments = fetch_posts_and_comments()
+    logging.info("Using PRAW-only scraping (Pushshift disabled)...")
+    posts_and_comments = fetch_posts_and_comments_praw()
     dd_comments = fetch_daily_discussion_comments()
     all_data = posts_and_comments + dd_comments
     df = pd.DataFrame(all_data)
     df.to_csv("wallstreetbets_filtered.csv", index=False)
-    logging.info("✅ Data saved to wallstreetbets_filtered.csv")
+    logging.info("Data saved to wallstreetbets_filtered.csv")
 
