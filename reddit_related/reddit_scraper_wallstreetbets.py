@@ -17,8 +17,8 @@ reddit = praw.Reddit(
 )
 
 # --- Time Range ---
-start_epoch = int(dt.datetime(2025, 4, 1).timestamp())
-end_epoch = int(dt.datetime(2025, 4, 15).timestamp())
+start_epoch = int(dt.datetime(2024, 12, 1).timestamp())
+end_epoch = int(dt.datetime(2025, 3, 15).timestamp())
 
 # --- Ticker + Full Name Map ---
 tickers_full = {
@@ -33,7 +33,7 @@ def fetch_posts_and_comments_praw():
     data = []
     count_posts = 0
     count_comments = 0
-    for submission in reddit.subreddit('wallstreetbets').new(limit=None):
+    for submission in reddit.subreddit('wallstreetbets').top(time_filter='year', limit=None):
         if submission.created_utc < start_epoch:
             break
         if submission.created_utc > end_epoch:
@@ -81,8 +81,17 @@ def fetch_daily_discussion_comments():
     for submission in reddit.subreddit('wallstreetbets').search('Daily Discussion', time_filter='year', sort='new'):
         if not (start_epoch <= submission.created_utc <= end_epoch):
             continue
-        submission.comments.replace_more(limit=0)
-        for comment in submission.comments.list():
+        try:
+            submission.comment_sort = 'top'
+            submission.comments.replace_more(limit=0)
+            comments = submission.comments.list()[:1000]  # Cap to top 1000
+        except Exception as e:
+            logging.warning(f"Error loading comments for DD post {submission.id}: {e}")
+            continue
+
+        for comment in comments:
+            if comment.score < 5:
+                continue  # Skip low-score comments
             comment_text = comment.body.upper()
             if any(alias in comment_text for alias in all_aliases):
                 count_dd_comments += 1
@@ -96,17 +105,18 @@ def fetch_daily_discussion_comments():
                     'parent_post_id': submission.id
                 })
         time.sleep(1)
-    logging.info(f"✅ Collected {count_dd_comments} daily discussion comments.")
-    print(f"✅ Collected {count_dd_comments} daily discussion comments.")
+    logging.info(f"✅ Collected {count_dd_comments} daily discussion comments (score ≥ 5).")
+    print(f"✅ Collected {count_dd_comments} daily discussion comments (score ≥ 5).")
     return data
+
 
 # --- Main ---
 if __name__ == '__main__':
     logging.info("Using PRAW-only scraping (Pushshift disabled)...")
-    posts_and_comments = fetch_posts_and_comments_praw()
+    # posts_and_comments = fetch_posts_and_comments_praw()
     dd_comments = fetch_daily_discussion_comments()
-    all_data = posts_and_comments + dd_comments
-    df = pd.DataFrame(all_data)
-    df.to_csv("wallstreetbets_filtered.csv", index=False)
-    logging.info("Data saved to wallstreetbets_filtered.csv")
+    # all_data = posts_and_comments + dd_comments
+    df = pd.DataFrame(dd_comments)
+    df.to_csv("wsb1201_0315.csv", index=False)
+    logging.info("Data saved to wsb1201_0315.csv")
 
