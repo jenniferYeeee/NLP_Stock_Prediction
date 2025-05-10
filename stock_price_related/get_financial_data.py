@@ -32,7 +32,7 @@ def get_financialdatamodelingprep_data():
     all_dfs.to_csv("stock_price_related/financialmodelingprep/all_historical_data.csv", index=False)
 
 def get_finhub_data():
-    API_KEY = '3c21662b208b40f69e4e7a4a13b9d075'  # Replace with your Twelve Data API key
+    API_KEY = '' 
 
     symbols = ['NVDA', 'TSLA', 'SPY']
     start_date = '2024-12-11'
@@ -59,7 +59,7 @@ def get_finhub_data():
                 df['datetime'] = pd.to_datetime(df['datetime'])
                 df = df.sort_values('datetime')
                 df['symbol'] = symbol
-                df.to_csv(f"stock_price_related/{symbol}_hourly_data.csv", index=False)
+                df.to_csv(f"stock_price_related/daily/{symbol}_hourly_data.csv", index=False)
                 all_dfs.append(df)
             else:
                 print(f"No data returned for {symbol}. Response: {data}")
@@ -69,7 +69,7 @@ def get_finhub_data():
 
     if all_dfs:
         combined_df = pd.concat(all_dfs, ignore_index=True)
-        combined_df.to_csv("stock_price_related/all_hourly_data.csv", index=False)
+        combined_df.to_csv("stock_price_related/daily/all_hourly_data.csv", index=False)
         print("Data extraction complete. Files saved in 'stock_price_related' directory.")
     else:
         print("No data was fetched for the given symbols and date range.")    
